@@ -111,7 +111,7 @@ export const PARTS: PartDef[] = [
     name: '관통',
     kind: 'effect',
     icon: '관',
-    desc: '탄이 적을 뚫고 지나가 2명을 더 맞힌다.',
+    desc: '탄이 적을 뚫고 지나가 2명을 더 맞힌다. 레이저에는 효과가 없다.',
     mod: { pierce: 2 },
   },
   {
@@ -119,7 +119,7 @@ export const PARTS: PartDef[] = [
     name: '유도',
     kind: 'effect',
     icon: '유',
-    desc: '탄이 가까운 적 쪽으로 휘어서 따라간다.',
+    desc: '탄이 가까운 적 쪽으로 휘어서 따라간다. 레이저는 적 쪽으로 구부러진다.',
     mod: { homing: 5 },
   },
   {
@@ -127,7 +127,7 @@ export const PARTS: PartDef[] = [
     name: '레이저',
     kind: 'effect',
     icon: '레',
-    desc: '공격이 투사체 대신 즉시 닿는 레이저가 된다. 직선 위의 모든 적을 맞힌다.',
+    desc: '공격이 투사체 대신 잠깐 유지되는 레이저가 되어 0.35초 동안 5번 연달아 피해를 준다. 레이저 위의 모든 적을 맞힌다.',
     mod: { laser: true, damageMul: 0.8 },
   },
   {

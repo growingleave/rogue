@@ -1,5 +1,6 @@
 import { activate, cellKey, intervalOf, BASE_ATTACK, type AttackSpec, type Board, type Cell } from './board';
 import type { Input } from './input';
+import { distToPath, laserPath, type Point } from './laser';
 
 // 모든 수치는 초안용 임시값이다.
 const MAX_PROJECTILES = 200;
@@ -10,7 +11,9 @@ const SPREAD = 0.2;
 const BURN_TIME = 2;
 const DPS_WINDOW = 5;
 const LASER_LENGTH = 520;
-const BEAM_TIME = 0.12;
+const LASER_TIME = 0.35;
+const LASER_TICKS = 5;
+const LASER_TICK_DAMAGE = 0.3;
 
 interface Dummy {
   id: number;
@@ -42,12 +45,12 @@ interface Projectile {
 }
 
 interface Beam {
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
-  width: number;
+  attack: AttackSpec;
+  offset: number;
   life: number;
+  ticksLeft: number;
+  nextTick: number;
+  path: Point[];
 }
 
 interface Blast {
@@ -132,6 +135,7 @@ export class Game {
     this.time += dt;
     const moved = this.movePlayer(dt);
     this.runInputs(dt, moved);
+    this.updateBeams(dt);
     this.moveProjectiles(dt);
     this.tickBurns(dt);
     this.tickVisuals(dt);
@@ -173,7 +177,7 @@ export class Game {
     const target = this.nearestDummy(this.player.x, this.player.y, []);
     const act = activate(this.board, cell);
     if (!target || !act) return;
-    if (act.attack.laser) this.fireLaser(act.attack, target);
+    if (act.attack.laser) this.fireLaser(act.attack);
     else this.shoot(act.attack, target);
     this.onActivate(act.cells);
   }
@@ -192,13 +196,13 @@ export class Game {
     return best;
   }
 
-  private angles(a: AttackSpec, target: Dummy): number[] {
-    const base = Math.atan2(target.y - this.player.y, target.x - this.player.x);
-    return Array.from({ length: a.count }, (_, i) => base + (i - (a.count - 1) / 2) * SPREAD);
+  private offsets(count: number): number[] {
+    return Array.from({ length: count }, (_, i) => (i - (count - 1) / 2) * SPREAD);
   }
 
   private shoot(a: AttackSpec, target: Dummy): void {
-    for (const ang of this.angles(a, target)) {
+    const base = Math.atan2(target.y - this.player.y, target.x - this.player.x);
+    for (const ang of this.offsets(a.count).map((o) => base + o)) {
       this.addProjectile({
         x: this.player.x,
         y: this.player.y,
@@ -218,40 +222,60 @@ export class Game {
     }
   }
 
-  private fireLaser(a: AttackSpec, target: Dummy): void {
-    const length = LASER_LENGTH * (a.speed / BASE_ATTACK.speed);
-    const width = a.size * 1.2;
-    for (const ang of this.angles(a, target)) {
-      const dx = Math.cos(ang);
-      const dy = Math.sin(ang);
-      const x1 = this.player.x;
-      const y1 = this.player.y;
-      this.beams.push({ x1, y1, x2: x1 + dx * length, y2: y1 + dy * length, width, life: BEAM_TIME });
-      for (const d of this.dummies) {
-        const along = (d.x - x1) * dx + (d.y - y1) * dy;
-        if (along < 0 || along > length + DUMMY_RADIUS) continue;
-        const off = Math.abs((d.x - x1) * dy - (d.y - y1) * dx);
-        if (off > DUMMY_RADIUS + width) continue;
-        this.onHit(
-          {
-            x: x1 + dx * along,
-            y: y1 + dy * along,
-            vx: dx * a.speed,
-            vy: dy * a.speed,
-            size: a.size,
-            damage: a.damage,
-            life: 0,
-            explodeRadius: a.explodeRadius,
-            splitCount: a.splitCount,
-            burnDps: a.burnDps,
-            pierce: 0,
-            homing: a.homing,
-            hit: [],
-            child: false,
-          },
-          d,
-        );
+  // 레이저는 잠깐 유지되며 여러 번 연달아 피해를 준다. 유도가 있으면 적 쪽으로 구부러지고, 관통은 효과가 없다.
+  private fireLaser(a: AttackSpec): void {
+    for (const offset of this.offsets(a.count)) {
+      this.beams.push({ attack: a, offset, life: LASER_TIME, ticksLeft: LASER_TICKS, nextTick: 0, path: [] });
+    }
+  }
+
+  private updateBeams(dt: number): void {
+    const target = this.nearestDummy(this.player.x, this.player.y, []);
+    const base = target ? Math.atan2(target.y - this.player.y, target.x - this.player.x) : 0;
+    for (const b of this.beams) {
+      const a = b.attack;
+      b.life -= dt;
+      b.path = laserPath(
+        [this.player.x, this.player.y],
+        base + b.offset,
+        LASER_LENGTH * (a.speed / BASE_ATTACK.speed),
+        a.homing / a.speed,
+        this.dummies.map((d) => ({ x: d.x, y: d.y, r: DUMMY_RADIUS })),
+      );
+      b.nextTick -= dt;
+      while (b.ticksLeft > 0 && b.nextTick <= 0) {
+        this.laserTick(b);
+        b.ticksLeft--;
+        b.nextTick += LASER_TIME / LASER_TICKS;
       }
+    }
+    this.beams = this.beams.filter((b) => b.life > 0 || b.ticksLeft > 0);
+  }
+
+  private laserTick(b: Beam): void {
+    const a = b.attack;
+    for (const d of this.dummies) {
+      if (distToPath(d.x, d.y, b.path) > DUMMY_RADIUS + a.size * 1.2) continue;
+      const ang = Math.atan2(d.y - this.player.y, d.x - this.player.x);
+      this.onHit(
+        {
+          x: d.x,
+          y: d.y,
+          vx: Math.cos(ang) * a.speed,
+          vy: Math.sin(ang) * a.speed,
+          size: a.size,
+          damage: a.damage * LASER_TICK_DAMAGE,
+          life: 0,
+          explodeRadius: a.explodeRadius,
+          splitCount: a.splitCount,
+          burnDps: a.burnDps,
+          pierce: 0,
+          homing: a.homing,
+          hit: [],
+          child: false,
+        },
+        d,
+      );
     }
   }
 
@@ -365,7 +389,6 @@ export class Game {
 
   private tickVisuals(dt: number): void {
     for (const d of this.dummies) d.flash = Math.max(0, d.flash - dt);
-    this.beams = this.beams.filter((b) => (b.life -= dt) > 0);
     this.blasts = this.blasts.filter((b) => (b.life -= dt) > 0);
     this.floaters = this.floaters.filter((f) => {
       f.y -= 40 * dt;
@@ -402,17 +425,21 @@ export class Game {
 
     for (const d of this.dummies) this.drawDummy(d);
 
+    g.lineCap = 'round';
+    g.lineJoin = 'round';
     for (const b of this.beams) {
-      g.globalAlpha = b.life / BEAM_TIME;
+      if (b.path.length < 2) continue;
+      g.globalAlpha = Math.max(0.3, b.life / LASER_TIME);
       g.strokeStyle = '#9ff6ff';
-      g.lineWidth = b.width * 2;
-      g.lineCap = 'round';
+      g.lineWidth = b.attack.size * 2.4;
       g.beginPath();
-      g.moveTo(b.x1, b.y1);
-      g.lineTo(b.x2, b.y2);
+      g.moveTo(b.path[0][0], b.path[0][1]);
+      for (const [x, y] of b.path.slice(1)) g.lineTo(x, y);
       g.stroke();
     }
     g.globalAlpha = 1;
+    g.lineCap = 'butt';
+    g.lineJoin = 'miter';
 
     for (const b of this.blasts) {
       g.strokeStyle = `rgba(255, 170, 80, ${b.life / 0.25})`;
