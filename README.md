@@ -3,7 +3,13 @@
 파츠 판에 파츠를 배치해 무기를 만드는 웹 액션 로그라이크의 허수아비 테스트 초안.
 기획은 `docs/GAME_DESIGN.md`, 개발 계획은 `docs/DEVELOPMENT_PLAN.md`에 있다.
 
-## 실행
+## 바로 플레이
+
+https://growingleave.github.io/rogue/
+
+`main` 브랜치에 올라가면 GitHub Actions가 자동으로 빌드·테스트 후 위 주소에 배포한다.
+
+## 로컬 실행
 
 Node.js가 필요하다.
 
