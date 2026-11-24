@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <title>파츠 판 초안</title>
+  </head>
+  <body>
+    <main class="layout">
+      <section class="arena-wrap">
+        <canvas id="arena"></canvas>
+        <p class="hint">이동: WASD·방향키, 또는 화면을 누르고 끌기</p>
+      </section>
+      <aside class="side">
+        <header>
+          <h1>파츠 판 <small>허수아비 테스트 초안</small></h1>
+        </header>
+        <div id="board" class="board-wrap"></div>
+        <p id="info" class="info"></p>
+        <div id="presets" class="presets"></div>
+        <div id="palette" class="palette"></div>
+        <p class="note">초안에서는 테스트를 위해 전투 중에도 판을 바꿀 수 있다. 모든 수치는 임시값이다.</p>
+      </aside>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
