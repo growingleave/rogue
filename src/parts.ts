@@ -1,7 +1,7 @@
-// 모든 수치는 첫 초안용 임시값이다.
+// 모든 수치는 초안용 임시값이다.
 
-export type Dir = 'right' | 'left' | 'up' | 'down' | 'cw';
-export type PartKind = 'output' | 'effect' | 'boost' | 'relay';
+export type PartKind = 'input' | 'effect' | 'boost';
+export type Trigger = 'timer' | 'move';
 
 export interface EffectMod {
   damageMul?: number;
@@ -12,6 +12,9 @@ export interface EffectMod {
   explodeRadius?: number;
   splitCount?: number;
   burnDps?: number;
+  pierce?: number;
+  homing?: number;
+  laser?: boolean;
 }
 
 export interface PartDef {
@@ -20,59 +23,39 @@ export interface PartDef {
   kind: PartKind;
   icon: string;
   desc: string;
-  dir?: Dir;
-  interval?: number;
+  trigger?: Trigger;
+  // timer: 발동 간격(초), move: 발동에 필요한 이동 거리(px)
+  every?: number;
   mod?: EffectMod;
   boostDamage?: number;
+  accelMul?: number;
 }
 
-export const DIR_ICON: Record<Dir, string> = {
-  right: '→',
-  left: '←',
-  up: '↑',
-  down: '↓',
-  cw: '↻',
-};
-
-const DIR_TEXT: Record<Dir, string> = {
-  right: '오른쪽 칸들을 순서대로',
-  left: '왼쪽 칸들을 순서대로',
-  up: '위쪽 칸들을 순서대로',
-  down: '아래쪽 칸들을 순서대로',
-  cw: '주변 8칸을 위쪽부터 시계방향 순서로',
-};
-
-const output = (dir: Dir): PartDef => ({
-  id: `out-${dir}`,
-  name: `출력 ${DIR_ICON[dir]}`,
-  kind: 'output',
-  icon: DIR_ICON[dir],
-  dir,
-  interval: 1,
-  desc: `1초마다 ${DIR_TEXT[dir]} 발동해 가장 가까운 적에게 투사체를 쏜다.`,
-});
-
-const relay = (dir: Dir): PartDef => ({
-  id: `relay-${dir}`,
-  name: `중계 ${DIR_ICON[dir]}`,
-  kind: 'relay',
-  icon: DIR_ICON[dir],
-  dir,
-  desc: `신호를 받으면 ${DIR_TEXT[dir]} 발동해 새 공격을 하나 더 쏜다.`,
-});
-
 export const PARTS: PartDef[] = [
-  output('right'),
-  output('left'),
-  output('up'),
-  output('down'),
-  output('cw'),
+  {
+    id: 'in-timer',
+    name: '1초마다',
+    kind: 'input',
+    icon: '◷',
+    trigger: 'timer',
+    every: 1,
+    desc: '1초마다 와이어를 따라 신호를 보내 가장 가까운 적을 공격한다.',
+  },
+  {
+    id: 'in-move',
+    name: '이동할 때',
+    kind: 'input',
+    icon: '⇝',
+    trigger: 'move',
+    every: 120,
+    desc: '일정 거리를 움직일 때마다 와이어를 따라 신호를 보내 공격한다. 멈춰 있으면 발동하지 않는다.',
+  },
   {
     id: 'sniper',
     name: '저격',
     kind: 'effect',
     icon: '저',
-    desc: '피해와 탄속이 크게 늘고 발사 간격이 길어진다.',
+    desc: '피해와 탄속이 크게 늘고 발동 간격이 길어진다.',
     mod: { damageMul: 2.2, speedMul: 1.6, cooldownMul: 1.5 },
   },
   {
@@ -88,7 +71,7 @@ export const PARTS: PartDef[] = [
     name: '속사',
     kind: 'effect',
     icon: '속',
-    desc: '발사 간격이 크게 줄고 피해가 조금 줄어든다.',
+    desc: '발동 간격이 크게 줄고 피해가 조금 줄어든다.',
     mod: { cooldownMul: 0.55, damageMul: 0.8 },
   },
   {
@@ -124,17 +107,45 @@ export const PARTS: PartDef[] = [
     mod: { burnDps: 6 },
   },
   {
+    id: 'pierce',
+    name: '관통',
+    kind: 'effect',
+    icon: '관',
+    desc: '탄이 적을 뚫고 지나가 2명을 더 맞힌다.',
+    mod: { pierce: 2 },
+  },
+  {
+    id: 'homing',
+    name: '유도',
+    kind: 'effect',
+    icon: '유',
+    desc: '탄이 가까운 적 쪽으로 휘어서 따라간다.',
+    mod: { homing: 5 },
+  },
+  {
+    id: 'laser',
+    name: '레이저',
+    kind: 'effect',
+    icon: '레',
+    desc: '공격이 투사체 대신 즉시 닿는 레이저가 된다. 직선 위의 모든 적을 맞힌다.',
+    mod: { laser: true, damageMul: 0.8 },
+  },
+  {
     id: 'boost',
     name: '강화',
     kind: 'boost',
     icon: '+',
     boostDamage: 0.3,
-    desc: '상하좌우로 붙은 출력·중계·효과 파츠가 만드는 공격의 피해 +30%.',
+    desc: '상하좌우로 붙은 입력·효과 파츠가 만드는 공격의 피해 +30%.',
   },
-  relay('right'),
-  relay('left'),
-  relay('up'),
-  relay('down'),
+  {
+    id: 'accel',
+    name: '가속',
+    kind: 'boost',
+    icon: '»',
+    accelMul: 0.75,
+    desc: '상하좌우로 붙은 입력 파츠의 발동 간격(이동할 때는 필요한 거리)이 25% 줄어든다.',
+  },
 ];
 
 export const PART_BY_ID = new Map(PARTS.map((p) => [p.id, p]));

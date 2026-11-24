@@ -1,122 +1,118 @@
 import { describe, expect, it } from 'vitest';
-import { BASE_ATTACK, Board, CHAIN_LIMITS, activate, arrowCells, cooldownOf } from './board';
+import { BASE_ATTACK, Board, MAX_WIRE, activate, intervalOf } from './board';
 
-describe('arrowCells', () => {
-  it('walks straight to the board edge in arrow order', () => {
-    expect(arrowCells('right', { r: 1, c: 1 }, 4, 4)).toEqual([
-      { r: 1, c: 2 },
-      { r: 1, c: 3 },
-    ]);
-    expect(arrowCells('up', { r: 2, c: 0 }, 4, 4)).toEqual([
-      { r: 1, c: 0 },
-      { r: 0, c: 0 },
-    ]);
-    expect(arrowCells('left', { r: 0, c: 0 }, 4, 4)).toEqual([]);
+const at = (r: number, c: number) => ({ r, c });
+
+describe('wires', () => {
+  it('connects only orthogonally adjacent cells, starting next to the input', () => {
+    const b = new Board();
+    b.set(1, 0, 'in-timer');
+    expect(b.setWire(at(1, 0), [at(1, 1), at(2, 1)])).toBe(true);
+    expect(b.setWire(at(1, 0), [at(2, 1)])).toBe(false);
+    expect(b.setWire(at(1, 0), [at(1, 1), at(2, 2)])).toBe(false);
   });
 
-  it('goes clockwise from the top and drops cells off the board', () => {
-    expect(arrowCells('cw', { r: 0, c: 0 }, 4, 4)).toEqual([
-      { r: 0, c: 1 },
-      { r: 1, c: 1 },
-      { r: 1, c: 0 },
-    ]);
-    expect(arrowCells('cw', { r: 1, c: 1 }, 4, 4)).toHaveLength(8);
+  it('may pass through empty cells but never revisit a cell or its own input', () => {
+    const b = new Board();
+    b.set(1, 1, 'in-timer');
+    expect(b.setWire(at(1, 1), [at(1, 2), at(1, 3)])).toBe(true);
+    expect(b.setWire(at(1, 1), [at(1, 2), at(1, 1)])).toBe(false);
+    expect(b.setWire(at(1, 1), [at(1, 2), at(2, 2), at(2, 1), at(2, 2)])).toBe(false);
+  });
+
+  it('cannot share cells with another wire or cross another input', () => {
+    const b = new Board();
+    b.set(0, 0, 'in-timer');
+    b.set(2, 0, 'in-move');
+    expect(b.setWire(at(0, 0), [at(0, 1), at(1, 1)])).toBe(true);
+    expect(b.setWire(at(2, 0), [at(2, 1), at(1, 1)])).toBe(false);
+    expect(b.setWire(at(2, 0), [at(1, 0), at(0, 0)])).toBe(false);
+    expect(b.setWire(at(2, 0), [at(2, 1), at(2, 2)])).toBe(true);
+  });
+
+  it('is limited to the max length', () => {
+    const b = new Board(1, MAX_WIRE + 2);
+    b.set(0, 0, 'in-timer');
+    const path = Array.from({ length: MAX_WIRE + 1 }, (_, i) => at(0, i + 1));
+    expect(b.setWire(at(0, 0), path.slice(0, MAX_WIRE))).toBe(true);
+    expect(b.setWire(at(0, 0), path)).toBe(false);
+  });
+
+  it('drops the wire when its input is removed or replaced', () => {
+    const b = new Board();
+    b.set(0, 0, 'in-timer');
+    b.setWire(at(0, 0), [at(0, 1)]);
+    b.set(0, 0, 'sniper');
+    expect(b.wire(at(0, 0))).toEqual([]);
+    expect(b.wireOwner(at(0, 1))).toBeNull();
+  });
+
+  it('cuts another wire where a new input is placed on it', () => {
+    const b = new Board();
+    b.set(0, 0, 'in-timer');
+    b.setWire(at(0, 0), [at(0, 1), at(0, 2), at(0, 3)]);
+    b.set(0, 2, 'in-move');
+    expect(b.wire(at(0, 0))).toEqual([at(0, 1)]);
   });
 });
 
 describe('activate', () => {
-  it('fires a plain projectile when the arrow range is empty', () => {
+  it('fires a plain projectile when the wire has no effects', () => {
     const b = new Board();
-    b.set(0, 0, 'out-right');
-    const [a] = activate(b, { r: 0, c: 0 });
-    expect(a.attack).toEqual(BASE_ATTACK);
+    b.set(0, 0, 'in-timer');
+    b.setWire(at(0, 0), [at(0, 1)]);
+    expect(activate(b, at(0, 0))!.attack).toEqual(BASE_ATTACK);
   });
 
-  it('combines every effect in the arrow range', () => {
+  it('combines effects along the wire and ignores parts off the wire', () => {
     const b = new Board();
-    b.set(0, 0, 'out-right');
+    b.set(0, 0, 'in-timer');
     b.set(0, 1, 'shotgun');
-    b.set(0, 3, 'explode');
-    b.set(1, 1, 'sniper');
-    const acts = activate(b, { r: 0, c: 0 });
-    expect(acts).toHaveLength(1);
-    expect(acts[0].cells).toEqual([
-      { r: 0, c: 1 },
-      { r: 0, c: 3 },
-    ]);
-    expect(acts[0].attack.count).toBe(3);
-    expect(acts[0].attack.damage).toBeCloseTo(6);
-    expect(acts[0].attack.explodeRadius).toBe(55);
+    b.set(1, 1, 'pierce');
+    b.set(2, 1, 'laser');
+    b.set(0, 2, 'explode');
+    b.setWire(at(0, 0), [at(0, 1), at(1, 1), at(2, 1)]);
+    const a = activate(b, at(0, 0))!;
+    expect(a.cells).toEqual([at(0, 0), at(0, 1), at(1, 1), at(2, 1)]);
+    expect(a.attack.count).toBe(3);
+    expect(a.attack.pierce).toBe(2);
+    expect(a.attack.laser).toBe(true);
+    expect(a.attack.explodeRadius).toBe(0);
+    expect(a.attack.damage).toBeCloseTo(10 * 0.6 * 0.8);
   });
 
-  it('adds boost damage once per adjacent boost part', () => {
+  it('adds boost damage once per boost next to the input or a wired effect', () => {
     const b = new Board();
-    b.set(1, 0, 'out-right');
+    b.set(1, 0, 'in-timer');
     b.set(1, 1, 'sniper');
     b.set(0, 1, 'boost');
     b.set(2, 0, 'boost');
-    const [a] = activate(b, { r: 1, c: 0 });
-    expect(a.attack.damage).toBeCloseTo(10 * 2.2 * 1.6);
-  });
-
-  it('relays start a second attack along their own arrow', () => {
-    const b = new Board();
-    b.set(0, 0, 'out-down');
-    b.set(1, 0, 'relay-right');
-    b.set(1, 1, 'shotgun');
-    const acts = activate(b, { r: 0, c: 0 });
-    expect(acts).toHaveLength(2);
-    expect(acts[0].attack.count).toBe(1);
-    expect(acts[1].source).toEqual({ r: 1, c: 0 });
-    expect(acts[1].attack.count).toBe(3);
-    expect(acts[1].depth).toBe(1);
-  });
-
-  it('terminates a relay loop within the chain caps', () => {
-    const b = new Board(3, 3);
-    b.set(0, 0, 'relay-right');
-    b.set(0, 1, 'relay-down');
-    b.set(1, 1, 'relay-left');
-    b.set(1, 0, 'relay-up');
-    b.set(2, 0, 'out-up');
-    const acts = activate(b, { r: 2, c: 0 });
-    expect(acts.length).toBeGreaterThan(4);
-    expect(acts.length).toBeLessThanOrEqual(1 + 4 * CHAIN_LIMITS.maxSamePart);
-    expect(acts.every((a) => a.depth <= CHAIN_LIMITS.maxDepth)).toBe(true);
-    for (const r of [0, 1]) {
-      for (const c of [0, 1]) {
-        const uses = acts.filter((a) => a.source.r === r && a.source.c === c).length;
-        expect(uses).toBeLessThanOrEqual(CHAIN_LIMITS.maxSamePart);
-      }
-    }
-  });
-
-  it('never lets one effect join more attacks than the cap within a chain', () => {
-    const b = new Board(3, 3);
-    b.set(0, 0, 'relay-right');
-    b.set(0, 1, 'relay-down');
-    b.set(1, 1, 'relay-left');
-    b.set(1, 0, 'relay-up');
-    b.set(2, 0, 'out-up');
-    b.set(0, 2, 'split');
-    const acts = activate(b, { r: 2, c: 0 });
-    const splitUses = acts.flatMap((a) => a.cells).filter((p) => p.r === 0 && p.c === 2).length;
-    expect(splitUses).toBe(CHAIN_LIMITS.maxSamePart);
+    b.set(3, 3, 'boost');
+    b.setWire(at(1, 0), [at(1, 1)]);
+    expect(activate(b, at(1, 0))!.attack.damage).toBeCloseTo(10 * 2.2 * 1.6);
   });
 });
 
-describe('cooldownOf', () => {
-  it('multiplies the base interval by effects in range', () => {
+describe('intervalOf', () => {
+  it('scales the timer by wired effects and adjacent accel parts', () => {
     const b = new Board();
-    b.set(0, 0, 'out-right');
+    b.set(0, 0, 'in-timer');
     b.set(0, 1, 'rapid');
-    b.set(0, 2, 'sniper');
-    expect(cooldownOf(b, { r: 0, c: 0 })).toBeCloseTo(0.55 * 1.5);
+    b.set(1, 0, 'accel');
+    b.set(1, 1, 'sniper');
+    b.setWire(at(0, 0), [at(0, 1)]);
+    expect(intervalOf(b, at(0, 0))).toBeCloseTo(0.55 * 0.75);
   });
 
-  it('is infinite for parts that are not outputs', () => {
+  it('uses distance for move inputs', () => {
+    const b = new Board();
+    b.set(0, 0, 'in-move');
+    expect(intervalOf(b, at(0, 0))).toBe(120);
+  });
+
+  it('is infinite for parts that are not inputs', () => {
     const b = new Board();
     b.set(0, 0, 'sniper');
-    expect(cooldownOf(b, { r: 0, c: 0 })).toBe(Infinity);
+    expect(intervalOf(b, at(0, 0))).toBe(Infinity);
   });
 });

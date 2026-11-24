@@ -1,7 +1,7 @@
-import { activate, cooldownOf, type AttackSpec, type Board, type Cell } from './board';
+import { activate, cellKey, intervalOf, BASE_ATTACK, type AttackSpec, type Board, type Cell } from './board';
 import type { Input } from './input';
 
-// 모든 수치는 첫 초안용 임시값이다.
+// 모든 수치는 초안용 임시값이다.
 const MAX_PROJECTILES = 200;
 const PLAYER_SPEED = 220;
 const PLAYER_RADIUS = 12;
@@ -9,6 +9,8 @@ const DUMMY_RADIUS = 20;
 const SPREAD = 0.2;
 const BURN_TIME = 2;
 const DPS_WINDOW = 5;
+const LASER_LENGTH = 520;
+const BEAM_TIME = 0.12;
 
 interface Dummy {
   id: number;
@@ -33,8 +35,19 @@ interface Projectile {
   explodeRadius: number;
   splitCount: number;
   burnDps: number;
-  ignore: number;
+  pierce: number;
+  homing: number;
+  hit: number[];
   child: boolean;
+}
+
+interface Beam {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  width: number;
+  life: number;
 }
 
 interface Blast {
@@ -64,9 +77,10 @@ export class Game {
   private dummies: Dummy[];
   private projectiles: Projectile[] = [];
   private spawned: Projectile[] = [];
+  private beams: Beam[] = [];
   private blasts: Blast[] = [];
   private floaters: Floater[] = [];
-  private timers = new Map<string, number>();
+  private progress = new Map<string, number>();
   private damageLog: { t: number; amount: number }[] = [];
 
   constructor(
@@ -116,18 +130,21 @@ export class Game {
 
   update(dt: number): void {
     this.time += dt;
-    this.movePlayer(dt);
-    this.runOutputs(dt);
+    const moved = this.movePlayer(dt);
+    this.runInputs(dt, moved);
     this.moveProjectiles(dt);
     this.tickBurns(dt);
     this.tickVisuals(dt);
   }
 
-  private movePlayer(dt: number): void {
+  private movePlayer(dt: number): number {
     const m = this.input.move();
+    const x0 = this.player.x;
+    const y0 = this.player.y;
     this.player.x += m.x * PLAYER_SPEED * dt;
     this.player.y += m.y * PLAYER_SPEED * dt;
     this.clampPlayer();
+    return Math.hypot(this.player.x - x0, this.player.y - y0);
   }
 
   private clampPlayer(): void {
@@ -135,39 +152,38 @@ export class Game {
     this.player.y = Math.min(Math.max(this.player.y, PLAYER_RADIUS), this.h - PLAYER_RADIUS);
   }
 
-  private runOutputs(dt: number): void {
+  private runInputs(dt: number, moved: number): void {
     const live = new Set<string>();
-    for (const { r, c, part } of this.board.entries()) {
-      if (part.kind !== 'output') continue;
-      const k = `${r},${c}`;
+    for (const cell of this.board.inputs()) {
+      const part = this.board.get(cell.r, cell.c)!;
+      const k = `${cellKey(cell)}:${part.id}`;
       live.add(k);
-      const cd = cooldownOf(this.board, { r, c });
-      let t = (this.timers.get(k) ?? 0) + dt;
-      if (t >= cd) {
-        t = Math.min(t - cd, cd);
-        this.fire({ r, c });
+      const need = intervalOf(this.board, cell);
+      let p = (this.progress.get(k) ?? 0) + (part.trigger === 'move' ? moved : dt);
+      if (p >= need) {
+        p = Math.min(p - need, need);
+        this.fire(cell);
       }
-      this.timers.set(k, t);
+      this.progress.set(k, p);
     }
-    for (const k of [...this.timers.keys()]) if (!live.has(k)) this.timers.delete(k);
+    for (const k of [...this.progress.keys()]) if (!live.has(k)) this.progress.delete(k);
   }
 
   private fire(cell: Cell): void {
-    const target = this.nearestDummy();
-    if (!target) return;
-    const touched: Cell[] = [cell];
-    for (const a of activate(this.board, cell)) {
-      touched.push(a.source, ...a.cells);
-      this.shoot(a.attack, target);
-    }
-    this.onActivate(touched);
+    const target = this.nearestDummy(this.player.x, this.player.y, []);
+    const act = activate(this.board, cell);
+    if (!target || !act) return;
+    if (act.attack.laser) this.fireLaser(act.attack, target);
+    else this.shoot(act.attack, target);
+    this.onActivate(act.cells);
   }
 
-  private nearestDummy(): Dummy | null {
+  private nearestDummy(x: number, y: number, skip: number[]): Dummy | null {
     let best: Dummy | null = null;
     let bestD = Infinity;
     for (const d of this.dummies) {
-      const dist = Math.hypot(d.x - this.player.x, d.y - this.player.y);
+      if (skip.includes(d.id)) continue;
+      const dist = Math.hypot(d.x - x, d.y - y);
       if (dist < bestD) {
         bestD = dist;
         best = d;
@@ -176,10 +192,13 @@ export class Game {
     return best;
   }
 
-  private shoot(a: AttackSpec, target: Dummy): void {
+  private angles(a: AttackSpec, target: Dummy): number[] {
     const base = Math.atan2(target.y - this.player.y, target.x - this.player.x);
-    for (let i = 0; i < a.count; i++) {
-      const ang = base + (i - (a.count - 1) / 2) * SPREAD;
+    return Array.from({ length: a.count }, (_, i) => base + (i - (a.count - 1) / 2) * SPREAD);
+  }
+
+  private shoot(a: AttackSpec, target: Dummy): void {
+    for (const ang of this.angles(a, target)) {
       this.addProjectile({
         x: this.player.x,
         y: this.player.y,
@@ -191,9 +210,48 @@ export class Game {
         explodeRadius: a.explodeRadius,
         splitCount: a.splitCount,
         burnDps: a.burnDps,
-        ignore: -1,
+        pierce: a.pierce,
+        homing: a.homing,
+        hit: [],
         child: false,
       });
+    }
+  }
+
+  private fireLaser(a: AttackSpec, target: Dummy): void {
+    const length = LASER_LENGTH * (a.speed / BASE_ATTACK.speed);
+    const width = a.size * 1.2;
+    for (const ang of this.angles(a, target)) {
+      const dx = Math.cos(ang);
+      const dy = Math.sin(ang);
+      const x1 = this.player.x;
+      const y1 = this.player.y;
+      this.beams.push({ x1, y1, x2: x1 + dx * length, y2: y1 + dy * length, width, life: BEAM_TIME });
+      for (const d of this.dummies) {
+        const along = (d.x - x1) * dx + (d.y - y1) * dy;
+        if (along < 0 || along > length + DUMMY_RADIUS) continue;
+        const off = Math.abs((d.x - x1) * dy - (d.y - y1) * dx);
+        if (off > DUMMY_RADIUS + width) continue;
+        this.onHit(
+          {
+            x: x1 + dx * along,
+            y: y1 + dy * along,
+            vx: dx * a.speed,
+            vy: dy * a.speed,
+            size: a.size,
+            damage: a.damage,
+            life: 0,
+            explodeRadius: a.explodeRadius,
+            splitCount: a.splitCount,
+            burnDps: a.burnDps,
+            pierce: 0,
+            homing: a.homing,
+            hit: [],
+            child: false,
+          },
+          d,
+        );
+      }
     }
   }
 
@@ -205,15 +263,18 @@ export class Game {
   private moveProjectiles(dt: number): void {
     const margin = 40;
     this.projectiles = this.projectiles.filter((p) => {
+      if (p.homing > 0) this.steer(p, dt);
       p.x += p.vx * dt;
       p.y += p.vy * dt;
       p.life -= dt;
       const hit = this.dummies.find(
-        (d) => d.id !== p.ignore && Math.hypot(d.x - p.x, d.y - p.y) <= DUMMY_RADIUS + p.size,
+        (d) => !p.hit.includes(d.id) && Math.hypot(d.x - p.x, d.y - p.y) <= DUMMY_RADIUS + p.size,
       );
       if (hit) {
         this.onHit(p, hit);
-        return false;
+        p.hit.push(hit.id);
+        if (p.pierce <= 0) return false;
+        p.pierce--;
       }
       return (
         p.life > 0 && p.x > -margin && p.x < this.w + margin && p.y > -margin && p.y < this.h + margin
@@ -221,6 +282,18 @@ export class Game {
     });
     for (const p of this.spawned) this.addProjectile(p);
     this.spawned = [];
+  }
+
+  private steer(p: Projectile, dt: number): void {
+    const target = this.nearestDummy(p.x, p.y, p.hit);
+    if (!target) return;
+    const speed = Math.hypot(p.vx, p.vy);
+    const cur = Math.atan2(p.vy, p.vx);
+    const want = Math.atan2(target.y - p.y, target.x - p.x);
+    const diff = Math.atan2(Math.sin(want - cur), Math.cos(want - cur));
+    const turn = Math.max(-p.homing * dt, Math.min(p.homing * dt, diff));
+    p.vx = Math.cos(cur + turn) * speed;
+    p.vy = Math.sin(cur + turn) * speed;
   }
 
   private onHit(p: Projectile, d: Dummy): void {
@@ -251,7 +324,8 @@ export class Game {
           life: 0.6,
           explodeRadius: p.explodeRadius * 0.6,
           splitCount: 0,
-          ignore: d.id,
+          pierce: 0,
+          hit: [d.id],
           child: true,
         });
       }
@@ -291,6 +365,7 @@ export class Game {
 
   private tickVisuals(dt: number): void {
     for (const d of this.dummies) d.flash = Math.max(0, d.flash - dt);
+    this.beams = this.beams.filter((b) => (b.life -= dt) > 0);
     this.blasts = this.blasts.filter((b) => (b.life -= dt) > 0);
     this.floaters = this.floaters.filter((f) => {
       f.y -= 40 * dt;
@@ -326,6 +401,18 @@ export class Game {
     }
 
     for (const d of this.dummies) this.drawDummy(d);
+
+    for (const b of this.beams) {
+      g.globalAlpha = b.life / BEAM_TIME;
+      g.strokeStyle = '#9ff6ff';
+      g.lineWidth = b.width * 2;
+      g.lineCap = 'round';
+      g.beginPath();
+      g.moveTo(b.x1, b.y1);
+      g.lineTo(b.x2, b.y2);
+      g.stroke();
+    }
+    g.globalAlpha = 1;
 
     for (const b of this.blasts) {
       g.strokeStyle = `rgba(255, 170, 80, ${b.life / 0.25})`;
