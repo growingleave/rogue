@@ -4,7 +4,15 @@ export interface Target {
   x: number;
   y: number;
   r: number;
+  id?: number;
 }
+
+export interface Fork {
+  target: Target;
+  branches: Point[][];
+}
+
+const BRANCH_SPREAD = 0.6;
 
 const SEGMENTS = 40;
 
@@ -54,16 +62,41 @@ function nearest(x: number, y: number, targets: Target[], skip: Set<Target>): Ta
   return best;
 }
 
+// 분열이 붙은 레이저는 처음 닿은 적에서 앞쪽으로 여러 갈래로 갈라진다.
+// 갈래는 그 적을 다시 노리지 않는다.
+export function forkPaths(
+  main: Point[],
+  targets: Target[],
+  width: number,
+  count: number,
+  length: number,
+  turnPerPx: number,
+): Fork | null {
+  if (count <= 0) return null;
+  for (let i = 1; i < main.length; i++) {
+    const hit = targets.find((t) => distToSegment(t.x, t.y, main[i - 1], main[i]) <= t.r + width);
+    if (!hit) continue;
+    const dir = Math.atan2(main[i][1] - main[i - 1][1], main[i][0] - main[i - 1][0]);
+    const others = targets.filter((t) => t !== hit);
+    const from: Point = [hit.x, hit.y];
+    const branches = Array.from({ length: count }, (_, k) =>
+      laserPath(from, dir + (k - (count - 1) / 2) * BRANCH_SPREAD, length, turnPerPx, others),
+    );
+    return { target: hit, branches };
+  }
+  return null;
+}
+
+function distToSegment(px: number, py: number, a: Point, b: Point): number {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const len2 = dx * dx + dy * dy;
+  const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - a[0]) * dx + (py - a[1]) * dy) / len2));
+  return Math.hypot(px - (a[0] + dx * t), py - (a[1] + dy * t));
+}
+
 export function distToPath(px: number, py: number, pts: Point[]): number {
   let best = Infinity;
-  for (let i = 1; i < pts.length; i++) {
-    const [ax, ay] = pts[i - 1];
-    const [bx, by] = pts[i];
-    const dx = bx - ax;
-    const dy = by - ay;
-    const len2 = dx * dx + dy * dy;
-    const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
-    best = Math.min(best, Math.hypot(px - (ax + dx * t), py - (ay + dy * t)));
-  }
+  for (let i = 1; i < pts.length; i++) best = Math.min(best, distToSegment(px, py, pts[i - 1], pts[i]));
   return best;
 }

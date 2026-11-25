@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { distToPath, laserPath } from './laser';
+import { distToPath, forkPaths, laserPath } from './laser';
 
 const TURN = 5 / 420;
 
@@ -36,6 +36,42 @@ describe('laserPath', () => {
       total += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
     }
     expect(total).toBeCloseTo(400);
+  });
+});
+
+describe('forkPaths', () => {
+  it('splits into branches at the first target the beam touches', () => {
+    const first = { x: 150, y: 0, r: 20, id: 1 };
+    const far = { x: 400, y: 0, r: 20, id: 2 };
+    const main = laserPath([0, 0], 0, 500, 0, [first, far]);
+    const fork = forkPaths(main, [far, first], 6, 3, 200, 0)!;
+    expect(fork.target.id).toBe(1);
+    expect(fork.branches).toHaveLength(3);
+    for (const b of fork.branches) expect(b[0]).toEqual([150, 0]);
+  });
+
+  it('fans the branches out around the beam direction', () => {
+    const t = { x: 150, y: 0, r: 20 };
+    const main = laserPath([0, 0], 0, 500, 0, [t]);
+    const ends = forkPaths(main, [t], 6, 3, 200, 0)!.branches.map((b) => b[b.length - 1]);
+    expect(ends[0][1]).toBeLessThan(-50);
+    expect(ends[1][1]).toBeCloseTo(0);
+    expect(ends[2][1]).toBeGreaterThan(50);
+  });
+
+  it('does not fork without split or without touching a target', () => {
+    const t = { x: 150, y: 300, r: 20 };
+    const main = laserPath([0, 0], 0, 500, 0, [t]);
+    expect(forkPaths(main, [t], 6, 3, 200, 0)).toBeNull();
+    expect(forkPaths(main, [{ x: 150, y: 0, r: 20 }], 6, 0, 200, 0)).toBeNull();
+  });
+
+  it('lets homing branches bend toward other targets but not the forked one', () => {
+    const first = { x: 150, y: 0, r: 20 };
+    const side = { x: 300, y: 120, r: 20 };
+    const main = laserPath([0, 0], 0, 500, 0, [first, side]);
+    const fork = forkPaths(main, [first, side], 6, 1, 300, 5 / 420)!;
+    expect(distToPath(side.x, side.y, fork.branches[0])).toBeLessThanOrEqual(side.r);
   });
 });
 

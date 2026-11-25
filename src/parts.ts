@@ -95,7 +95,7 @@ export const PARTS: PartDef[] = [
     name: '분열',
     kind: 'effect',
     icon: '분',
-    desc: '맞으면 작은 탄 3개로 갈라진다.',
+    desc: '맞으면 작은 탄 3개로 갈라진다. 레이저는 처음 닿은 적에서 3갈래로 갈라진다.',
     mod: { splitCount: 3 },
   },
   {
@@ -127,7 +127,7 @@ export const PARTS: PartDef[] = [
     name: '레이저',
     kind: 'effect',
     icon: '레',
-    desc: '공격이 투사체 대신 잠깐 유지되는 레이저가 되어 0.35초 동안 5번 연달아 피해를 준다. 레이저 위의 모든 적을 맞힌다.',
+    desc: '공격이 투사체 대신 잠깐 유지되는 레이저가 되어 0.35초 동안 5번 연달아 피해를 준다. 레이저 위의 모든 적을 맞힌다. 폭발·화상은 적마다 한 번만 터진다.',
     mod: { laser: true, damageMul: 0.8 },
   },
   {
