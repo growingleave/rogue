@@ -1,4 +1,5 @@
 import { PART_BY_ID, type PartDef } from './parts';
+import { MAX_WIRE } from './tuning';
 
 export interface Cell {
   r: number;
@@ -24,7 +25,7 @@ export interface Activation {
   attack: AttackSpec;
 }
 
-// 공격 형태 파츠가 없으면 기본 투사체를 쏜다. 수치는 임시값.
+// 공격 형태 파츠가 없으면 기본 투사체를 쏜다. 피해는 입력 파츠의 기본 피해로 덮어쓴다. 수치는 임시값.
 export const BASE_ATTACK: AttackSpec = {
   damage: 10,
   speed: 420,
@@ -38,9 +39,6 @@ export const BASE_ATTACK: AttackSpec = {
   homing: 0,
   laser: false,
 };
-
-// 와이어 최대 길이(입력 파츠 칸 제외). 임시값.
-export const MAX_WIRE = 5;
 
 const NEIGHBORS4: Cell[] = [
   { r: -1, c: 0 },
@@ -88,6 +86,15 @@ export class Board {
   clear(): void {
     this.cells.fill(null);
     this.wires.clear();
+  }
+
+  // 빈 칸으로만 옮길 수 있다. 입력 파츠를 옮기면 와이어는 처음부터 다시 그려야 한다.
+  move(from: Cell, to: Cell): boolean {
+    const part = this.get(from.r, from.c);
+    if (!part || !this.inBounds(to.r, to.c) || this.get(to.r, to.c)) return false;
+    this.set(from.r, from.c, null);
+    this.set(to.r, to.c, part.id);
+    return true;
   }
 
   entries(): { r: number; c: number; part: PartDef }[] {
@@ -173,8 +180,8 @@ export class Board {
   }
 }
 
-export function combine(effects: PartDef[], boostBonus = 0): AttackSpec {
-  const a = { ...BASE_ATTACK };
+export function combine(effects: PartDef[], boostBonus = 0, baseDamage = BASE_ATTACK.damage): AttackSpec {
+  const a = { ...BASE_ATTACK, damage: baseDamage };
   for (const e of effects) {
     const m = e.mod ?? {};
     a.damage *= m.damageMul ?? 1;
@@ -194,18 +201,20 @@ export function combine(effects: PartDef[], boostBonus = 0): AttackSpec {
 
 // 입력 파츠 하나가 발동했을 때 와이어를 따라 만들어지는 공격.
 export function activate(board: Board, input: Cell): Activation | null {
-  if (board.get(input.r, input.c)?.kind !== 'input') return null;
+  const part = board.get(input.r, input.c);
+  if (part?.kind !== 'input') return null;
   const effects = board.effectsOn(input);
   return {
     cells: [input, ...board.wire(input)],
     attack: combine(
       effects.map((e) => e.part),
       board.boostBonus(input),
+      part.damage,
     ),
   };
 }
 
-// timer 입력은 초, move 입력은 이동 거리(px).
+// 최종 쿨타임(초). 이동할 때 입력은 이 값 × 이동속도만큼 움직일 때마다 발동한다.
 export function intervalOf(board: Board, input: Cell): number {
   const part = board.get(input.r, input.c);
   if (part?.kind !== 'input') return Infinity;
@@ -214,5 +223,5 @@ export function intervalOf(board: Board, input: Cell): number {
   for (const d of NEIGHBORS4) {
     mul *= board.get(input.r + d.r, input.c + d.c)?.accelMul ?? 1;
   }
-  return (part.every ?? 1) * mul;
+  return (part.cooldown ?? 1) * mul;
 }

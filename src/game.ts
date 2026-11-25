@@ -1,21 +1,24 @@
 import { activate, cellKey, intervalOf, BASE_ATTACK, type AttackSpec, type Board, type Cell } from './board';
 import type { Input } from './input';
 import { distToPath, forkPaths, laserPath, type Point } from './laser';
+import {
+  BRANCH_DAMAGE,
+  BRANCH_LENGTH,
+  BURN_TIME,
+  EXPLODE_DAMAGE,
+  LASER_LENGTH,
+  LASER_TICKS,
+  LASER_TICK_DAMAGE,
+  LASER_TIME,
+  MAX_PROJECTILES,
+  PLAYER_SPEED,
+  SPLIT_DAMAGE,
+} from './tuning';
 
-// 모든 수치는 초안용 임시값이다.
-const MAX_PROJECTILES = 200;
-const PLAYER_SPEED = 220;
 const PLAYER_RADIUS = 12;
 const DUMMY_RADIUS = 20;
 const SPREAD = 0.2;
-const BURN_TIME = 2;
 const DPS_WINDOW = 5;
-const LASER_LENGTH = 520;
-const LASER_TIME = 0.35;
-const LASER_TICKS = 5;
-const LASER_TICK_DAMAGE = 0.3;
-const BRANCH_LENGTH = 0.5;
-const BRANCH_DAMAGE = 0.5;
 
 interface Dummy {
   id: number;
@@ -167,7 +170,8 @@ export class Game {
       const part = this.board.get(cell.r, cell.c)!;
       const k = `${cellKey(cell)}:${part.id}`;
       live.add(k);
-      const need = intervalOf(this.board, cell);
+      const cd = intervalOf(this.board, cell);
+      const need = part.trigger === 'move' ? cd * PLAYER_SPEED : cd;
       let p = (this.progress.get(k) ?? 0) + (part.trigger === 'move' ? moved : dt);
       if (p >= need) {
         p = Math.min(p - need, need);
@@ -285,7 +289,7 @@ export class Game {
     if (b.effectsDone.has(d.id)) return;
     b.effectsDone.add(d.id);
     this.burn(d, a.burnDps);
-    this.explode(d.x, d.y, a.explodeRadius, a.damage * mul * 0.5);
+    this.explode(d.x, d.y, a.explodeRadius, a.damage * mul * EXPLODE_DAMAGE);
   }
 
   private burn(d: Dummy, dps: number): void {
@@ -346,7 +350,7 @@ export class Game {
   private onHit(p: Projectile, d: Dummy): void {
     this.damage(d, p.damage, '#e8f4ff');
     this.burn(d, p.burnDps);
-    this.explode(p.x, p.y, p.explodeRadius, p.damage * 0.5);
+    this.explode(p.x, p.y, p.explodeRadius, p.damage * EXPLODE_DAMAGE);
     if (p.splitCount > 0 && !p.child) {
       const base = Math.atan2(p.vy, p.vx) + Math.PI / 2;
       const speed = Math.hypot(p.vx, p.vy) * 0.8;
@@ -357,7 +361,7 @@ export class Game {
           vx: Math.cos(ang) * speed,
           vy: Math.sin(ang) * speed,
           size: p.size * 0.7,
-          damage: p.damage * 0.5,
+          damage: p.damage * SPLIT_DAMAGE,
           life: 0.6,
           explodeRadius: p.explodeRadius * 0.6,
           splitCount: 0,

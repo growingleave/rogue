@@ -11,7 +11,14 @@ const board = new Board(4, 4);
 const game = new Game(canvas, new Input(canvas), board);
 
 mountUI(
-  { board: $('board'), palette: $('palette'), presets: $('presets'), info: $('info') },
+  {
+    board: $('board'),
+    palette: $('palette'),
+    info: $('info'),
+    presets: $('presets') as HTMLSelectElement,
+    eraser: $('eraser') as HTMLButtonElement,
+    clear: $('clear') as HTMLButtonElement,
+  },
   board,
   game,
 );

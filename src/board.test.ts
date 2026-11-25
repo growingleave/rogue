@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { BASE_ATTACK, Board, MAX_WIRE, activate, intervalOf } from './board';
+import { BASE_ATTACK, Board, activate, intervalOf } from './board';
+import { PART_BY_ID, statLines } from './parts';
+import { MAX_WIRE, PLAYER_SPEED } from './tuning';
 
 const at = (r: number, c: number) => ({ r, c });
 
@@ -56,12 +58,57 @@ describe('wires', () => {
   });
 });
 
-describe('activate', () => {
-  it('fires a plain projectile when the wire has no effects', () => {
+describe('move', () => {
+  it('moves a part to an empty cell and keeps wires passing through', () => {
+    const b = new Board();
+    b.set(0, 0, 'in-timer');
+    b.set(0, 1, 'sniper');
+    b.setWire(at(0, 0), [at(0, 1), at(0, 2)]);
+    expect(b.move(at(0, 1), at(2, 2))).toBe(true);
+    expect(b.get(0, 1)).toBeNull();
+    expect(b.get(2, 2)?.id).toBe('sniper');
+    expect(b.wire(at(0, 0))).toEqual([at(0, 1), at(0, 2)]);
+  });
+
+  it('refuses occupied targets and empty sources', () => {
+    const b = new Board();
+    b.set(0, 0, 'sniper');
+    b.set(0, 1, 'shotgun');
+    expect(b.move(at(0, 0), at(0, 1))).toBe(false);
+    expect(b.move(at(3, 3), at(2, 2))).toBe(false);
+  });
+
+  it('resets the wire of a moved input', () => {
     const b = new Board();
     b.set(0, 0, 'in-timer');
     b.setWire(at(0, 0), [at(0, 1)]);
-    expect(activate(b, at(0, 0))!.attack).toEqual(BASE_ATTACK);
+    b.move(at(0, 0), at(3, 3));
+    expect(b.wire(at(3, 3))).toEqual([]);
+    expect(b.wireOwner(at(0, 1))).toBeNull();
+  });
+});
+
+describe('statLines', () => {
+  it('shows base damage and cooldown for inputs, and the move distance', () => {
+    const lines = statLines(PART_BY_ID.get('in-move')!);
+    expect(lines).toContain('기본 피해 8');
+    expect(lines).toContain('쿨타임 0.5초');
+    expect(lines.join(' ')).toContain(`${0.5 * PLAYER_SPEED}px`);
+  });
+
+  it('lists every modifier of an effect', () => {
+    expect(statLines(PART_BY_ID.get('sniper')!)).toEqual(['피해 ×2.2', '탄속·레이저 길이 ×1.6', '쿨타임 ×1.5']);
+  });
+});
+
+describe('activate', () => {
+  it('fires a plain projectile with the input base damage when the wire has no effects', () => {
+    const b = new Board();
+    b.set(0, 0, 'in-timer');
+    b.set(2, 0, 'in-move');
+    b.setWire(at(0, 0), [at(0, 1)]);
+    expect(activate(b, at(0, 0))!.attack).toEqual({ ...BASE_ATTACK, damage: 10 });
+    expect(activate(b, at(2, 0))!.attack.damage).toBe(8);
   });
 
   it('combines effects along the wire and ignores parts off the wire', () => {
@@ -104,10 +151,10 @@ describe('intervalOf', () => {
     expect(intervalOf(b, at(0, 0))).toBeCloseTo(0.55 * 0.75);
   });
 
-  it('uses distance for move inputs', () => {
+  it('gives move inputs a cooldown in seconds like timers', () => {
     const b = new Board();
     b.set(0, 0, 'in-move');
-    expect(intervalOf(b, at(0, 0))).toBe(120);
+    expect(intervalOf(b, at(0, 0))).toBe(0.5);
   });
 
   it('is infinite for parts that are not inputs', () => {

@@ -1,17 +1,16 @@
-import { MAX_WIRE, intervalOf, type Board, type Cell } from './board';
+import { activate, intervalOf, type Board, type Cell } from './board';
 import type { Game } from './game';
-import { PARTS, PART_BY_ID, type PartDef, type PartKind } from './parts';
+import { PARTS, PART_BY_ID, statLines, type PartDef } from './parts';
+import { MAX_WIRE, PLAYER_SPEED } from './tuning';
 
-const ERASE = 'erase';
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const UNIT = 100;
-const IDLE_TEXT = '파츠를 고르고 칸을 눌러 놓는다. 입력 파츠를 누른 채 옆 칸으로 끌면 와이어가 이어진다.';
 
-const GROUPS: { title: string; kinds: PartKind[] }[] = [
-  { title: '입력 파츠', kinds: ['input'] },
-  { title: '효과 파츠', kinds: ['effect'] },
-  { title: '강화 파츠', kinds: ['boost'] },
-];
+const KIND_NAME: Record<PartDef['kind'], string> = {
+  input: '입력 파츠',
+  effect: '효과 파츠',
+  boost: '강화 파츠',
+};
 
 type At = [number, number];
 
@@ -51,23 +50,28 @@ const PRESETS: Preset[] = [
 export interface UIRoots {
   board: HTMLElement;
   palette: HTMLElement;
-  presets: HTMLElement;
   info: HTMLElement;
+  presets: HTMLSelectElement;
+  eraser: HTMLButtonElement;
+  clear: HTMLButtonElement;
 }
 
 interface Drag {
   pointerId: number;
   start: Cell;
   last: Cell;
-  wiring: boolean;
+  mode: 'wire' | 'move' | 'tap';
   dragged: boolean;
   path: Cell[];
 }
 
 export function mountUI(roots: UIRoots, board: Board, game: Game): void {
   let selected: string | null = null;
+  let eraser = false;
+  let picked: Cell | null = null;
   let drag: Drag | null = null;
   const cellEls: HTMLDivElement[][] = [];
+  const tiles = new Map<string, HTMLButtonElement>();
 
   const svg = document.createElementNS(SVG_NS, 'svg');
   svg.classList.add('wires');
@@ -90,74 +94,81 @@ export function mountUI(roots: UIRoots, board: Board, game: Game): void {
   }
   roots.board.append(svg, grid);
 
+  for (const part of PARTS) {
+    const tile = document.createElement('button');
+    tile.className = `tile kind-${part.kind}`;
+    tile.title = part.name;
+    tile.append(span('icon', part.icon), span('name', part.name));
+    tile.addEventListener('click', () => {
+      selected = selected === part.id ? null : part.id;
+      eraser = false;
+      picked = null;
+      refresh();
+    });
+    roots.palette.appendChild(tile);
+    tiles.set(part.id, tile);
+  }
+
+  roots.presets.append(new Option('준비된 배치 불러오기', ''));
+  PRESETS.forEach((p, i) => roots.presets.append(new Option(p.name, String(i))));
+  roots.presets.addEventListener('change', () => {
+    const preset = PRESETS[Number(roots.presets.value)];
+    roots.presets.value = '';
+    if (preset) load(preset);
+  });
+
+  roots.eraser.addEventListener('click', () => {
+    eraser = !eraser;
+    selected = null;
+    picked = null;
+    refresh();
+  });
+
+  roots.clear.addEventListener('click', () => {
+    board.clear();
+    picked = null;
+    refresh();
+  });
+
   grid.addEventListener('pointerdown', (e) => {
     const cell = cellAt(e);
     if (!cell || drag) return;
-    const wiring = board.get(cell.r, cell.c)?.kind === 'input';
-    drag = { pointerId: e.pointerId, start: cell, last: cell, wiring, dragged: false, path: [] };
+    const part = board.get(cell.r, cell.c);
+    let mode: Drag['mode'] = 'tap';
+    if (!eraser && !selected && part) mode = part.kind === 'input' ? 'wire' : 'move';
+    drag = { pointerId: e.pointerId, start: cell, last: cell, mode, dragged: false, path: [] };
     grid.setPointerCapture(e.pointerId);
   });
 
   grid.addEventListener('pointermove', (e) => {
-    if (drag?.pointerId !== e.pointerId || !drag.wiring) return;
+    if (drag?.pointerId !== e.pointerId || drag.mode === 'tap') return;
     const cell = cellAt(e);
     if (!cell || same(cell, drag.last)) return;
-    const back = drag.path.length >= 2 ? drag.path[drag.path.length - 2] : drag.start;
-    if (drag.path.length > 0 && same(cell, back)) {
-      drag.path.pop();
-    } else if (board.canWire(drag.start, [...drag.path, cell])) {
-      drag.path.push(cell);
-    } else {
-      return;
-    }
-    drag.last = cell;
-    drag.dragged = true;
-    board.setWire(drag.start, drag.path);
-    drawWires();
-    say(`와이어 ${drag.path.length}/${MAX_WIRE}칸. 지나온 칸으로 되돌아가면 와이어가 줄어든다.`);
+    if (drag.mode === 'wire') extendWire(drag, cell);
+    else hoverMove(drag, cell);
   });
 
-  const endDrag = (e: PointerEvent) => {
+  grid.addEventListener('pointerup', (e) => {
     if (drag?.pointerId !== e.pointerId) return;
-    const { start, dragged } = drag;
+    const d = drag;
     drag = null;
-    if (!dragged) onTap(start);
-  };
-  grid.addEventListener('pointerup', endDrag);
-  grid.addEventListener('pointercancel', (e) => {
-    if (drag?.pointerId === e.pointerId) drag = null;
+    clearDrop();
+    if (!d.dragged) {
+      onTap(d.start);
+    } else if (d.mode === 'move' && !board.get(d.last.r, d.last.c)) {
+      board.move(d.start, d.last);
+      picked = d.last;
+      refresh();
+    } else if (d.mode === 'wire') {
+      refresh();
+    }
   });
 
-  for (const group of GROUPS) {
-    const title = document.createElement('h3');
-    title.textContent = group.title;
-    const row = document.createElement('div');
-    row.className = 'chips';
-    for (const part of PARTS.filter((p) => group.kinds.includes(p.kind))) {
-      row.appendChild(chip(part.id, part.icon, part.name, `kind-${part.kind}`));
-    }
-    roots.palette.append(title, row);
-  }
-  const tools = document.createElement('div');
-  tools.className = 'chips';
-  tools.appendChild(chip(ERASE, '✕', '지우개', 'kind-erase'));
-  roots.palette.appendChild(tools);
-
-  for (const preset of PRESETS) {
-    roots.presets.appendChild(
-      button(preset.name, () => {
-        load(preset);
-        say(`'${preset.name}' 배치를 불러왔다.`);
-      }),
-    );
-  }
-  roots.presets.appendChild(
-    button('비우기', () => {
-      board.clear();
-      refresh();
-      say('판을 비웠다.');
-    }),
-  );
+  grid.addEventListener('pointercancel', (e) => {
+    if (drag?.pointerId !== e.pointerId) return;
+    drag = null;
+    clearDrop();
+  });
 
   game.onActivate = (cells) => {
     cells.forEach((p, i) => {
@@ -169,52 +180,53 @@ export function mountUI(roots: UIRoots, board: Board, game: Game): void {
     });
   };
 
-  function cellAt(e: PointerEvent): Cell | null {
-    const rect = grid.getBoundingClientRect();
-    const c = Math.floor(((e.clientX - rect.left) / rect.width) * board.cols);
-    const r = Math.floor(((e.clientY - rect.top) / rect.height) * board.rows);
-    return board.inBounds(r, c) ? { r, c } : null;
+  function extendWire(d: Drag, cell: Cell): void {
+    const back = d.path.length >= 2 ? d.path[d.path.length - 2] : d.start;
+    if (d.path.length > 0 && same(cell, back)) d.path.pop();
+    else if (board.canWire(d.start, [...d.path, cell])) d.path.push(cell);
+    else return;
+    d.last = cell;
+    d.dragged = true;
+    board.setWire(d.start, d.path);
+    drawWires();
+    showText(`와이어 ${d.path.length}/${MAX_WIRE}칸. 지나온 칸으로 되돌아가면 와이어가 줄어든다.`);
+  }
+
+  function hoverMove(d: Drag, cell: Cell): void {
+    d.last = cell;
+    d.dragged = !same(cell, d.start);
+    clearDrop();
+    if (d.dragged) {
+      cellEls[cell.r][cell.c].classList.add(board.get(cell.r, cell.c) ? 'drop-bad' : 'drop');
+    }
+  }
+
+  function clearDrop(): void {
+    for (const row of cellEls) for (const el of row) el.classList.remove('drop', 'drop-bad');
   }
 
   function onTap(cell: Cell): void {
-    const { r, c } = cell;
-    if (selected === ERASE) {
-      board.set(r, c, null);
-      refresh();
-      return;
+    const part = board.get(cell.r, cell.c);
+    if (eraser) {
+      board.set(cell.r, cell.c, null);
+    } else if (selected) {
+      board.set(cell.r, cell.c, selected);
+    } else if (picked && same(picked, cell)) {
+      picked = null;
+    } else if (picked && !part) {
+      board.move(picked, cell);
+      picked = cell;
+    } else {
+      picked = part ? cell : null;
     }
-    if (selected) {
-      board.set(r, c, selected);
-      refresh();
-      return;
-    }
-    const part = board.get(r, c);
-    if (!part) say('빈 칸이다. 아래에서 파츠를 고른 뒤 눌러 놓는다.');
-    else if (part.kind === 'input') say(inputInfo(part, cell));
-    else say(`${part.name}: ${part.desc}`);
+    refresh();
   }
 
-  function inputInfo(part: PartDef, cell: Cell): string {
-    const v = intervalOf(board, cell);
-    const every = part.trigger === 'move' ? `${Math.round(v)}px 이동마다` : `${v.toFixed(2)}초마다`;
-    return `${part.name}: ${part.desc} 지금은 ${every} 발동. 와이어 ${board.wire(cell).length}/${MAX_WIRE}칸.`;
-  }
-
-  function chip(id: string, icon: string, name: string, cls: string): HTMLButtonElement {
-    const el = button('', () => {
-      selected = selected === id ? null : id;
-      for (const other of roots.palette.querySelectorAll('.chip')) {
-        other.classList.toggle('selected', other === el && selected === id);
-      }
-      if (!selected) say(IDLE_TEXT);
-      else if (selected === ERASE) say('지우개: 판의 칸을 눌러 파츠를 뺀다. 입력 파츠를 빼면 그 와이어도 사라진다.');
-      else say(`${name}: ${PART_BY_ID.get(id)!.desc} 판의 칸을 눌러 놓는다.`);
-    });
-    el.classList.add('chip', cls);
-    el.innerHTML = `<span class="icon"></span><span class="name"></span>`;
-    el.querySelector('.icon')!.textContent = icon;
-    el.querySelector('.name')!.textContent = name;
-    return el;
+  function removePicked(): void {
+    if (!picked) return;
+    board.set(picked.r, picked.c, null);
+    picked = null;
+    refresh();
   }
 
   function load(preset: Preset): void {
@@ -223,23 +235,94 @@ export function mountUI(roots: UIRoots, board: Board, game: Game): void {
     for (const [[r, c], path] of preset.wires) {
       board.setWire({ r, c }, path.map(([pr, pc]) => ({ r: pr, c: pc })));
     }
+    picked = null;
+    selected = null;
+    eraser = false;
     refresh();
   }
 
   function refresh(): void {
+    if (picked && !board.get(picked.r, picked.c)) picked = null;
     for (let r = 0; r < board.rows; r++) {
       for (let c = 0; c < board.cols; c++) {
         const el = cellEls[r][c];
         const part = board.get(r, c);
-        el.className = `cell${part ? ` kind-${part.kind}` : ''}`;
-        el.innerHTML = part ? `<span class="icon"></span><span class="name"></span>` : '';
-        if (part) {
-          el.querySelector('.icon')!.textContent = part.icon;
-          el.querySelector('.name')!.textContent = part.name;
+        const isPicked = !!picked && picked.r === r && picked.c === c;
+        el.className = `cell${part ? ` kind-${part.kind}` : ''}${isPicked ? ' picked' : ''}`;
+        el.replaceChildren();
+        if (part) el.append(span('icon', part.icon), span('name', part.name));
+        if (isPicked) {
+          const del = document.createElement('button');
+          del.className = 'del';
+          del.textContent = '✕';
+          del.title = '지우기';
+          // 파츠를 고른 탭의 뒤늦은 click이 새로 생긴 ✕에 닿아 바로 지워지지 않게, ✕에서 시작한 누름만 받는다.
+          let armed = false;
+          del.addEventListener('pointerdown', (e) => {
+            e.stopPropagation();
+            armed = true;
+          });
+          del.addEventListener('click', () => {
+            if (armed) removePicked();
+          });
+          el.appendChild(del);
         }
       }
     }
+    for (const [id, tile] of tiles) tile.classList.toggle('selected', id === selected);
+    roots.eraser.classList.toggle('active', eraser);
+    roots.board.classList.toggle('erasing', eraser);
     drawWires();
+    showInfo();
+  }
+
+  function showInfo(): void {
+    if (eraser) return showText('지우개: 판의 파츠를 눌러 지운다. 다시 누르면 지우개가 꺼진다.');
+    if (picked) {
+      const part = board.get(picked.r, picked.c)!;
+      const extra = part.kind === 'input' ? inputSummary(picked) : [];
+      const hint =
+        part.kind === 'input'
+          ? '빈 칸을 눌러 옮긴다(와이어는 새로 그린다). 끌면 와이어가 이어진다. ✕로 지운다.'
+          : '끌어서 옮기거나, 빈 칸을 눌러 옮긴다. ✕로 지운다.';
+      return showPart(part, extra, hint);
+    }
+    if (selected) return showPart(PART_BY_ID.get(selected)!, [], '판의 칸을 눌러 놓는다.');
+    showText('아래에서 파츠를 고르고 판의 칸을 눌러 놓는다. 놓인 파츠를 누르면 수치를 보고 옮기거나 지울 수 있다.');
+  }
+
+  function inputSummary(cell: Cell): string[] {
+    const part = board.get(cell.r, cell.c)!;
+    const a = activate(board, cell)!.attack;
+    const cd = intervalOf(board, cell);
+    const every =
+      part.trigger === 'move' ? `${Math.round(cd * PLAYER_SPEED)}px 움직일 때마다` : `${cd.toFixed(2)}초마다`;
+    const form = a.laser ? '레이저' : '투사체';
+    return [
+      `지금 이 입력의 공격: ${form} ${a.count}발, 피해 ${a.damage.toFixed(1)}, ${every}`,
+      `와이어 ${board.wire(cell).length}/${MAX_WIRE}칸`,
+    ];
+  }
+
+  function showPart(part: PartDef, extra: string[], hint: string): void {
+    const title = document.createElement('div');
+    title.className = 'info-title';
+    title.append(span('info-name', part.name), span('info-kind', KIND_NAME[part.kind]));
+    const list = document.createElement('ul');
+    for (const line of [...statLines(part), ...extra]) {
+      const li = document.createElement('li');
+      li.textContent = line;
+      list.appendChild(li);
+    }
+    const desc = document.createElement('p');
+    desc.textContent = `${part.desc} ${hint}`;
+    roots.info.replaceChildren(title, list, desc);
+  }
+
+  function showText(text: string): void {
+    const p = document.createElement('p');
+    p.textContent = text;
+    roots.info.replaceChildren(p);
   }
 
   function drawWires(): void {
@@ -254,6 +337,13 @@ export function mountUI(roots: UIRoots, board: Board, game: Game): void {
     }
   }
 
+  function cellAt(e: PointerEvent): Cell | null {
+    const rect = grid.getBoundingClientRect();
+    const c = Math.floor(((e.clientX - rect.left) / rect.width) * board.cols);
+    const r = Math.floor(((e.clientY - rect.top) / rect.height) * board.rows);
+    return board.inBounds(r, c) ? { r, c } : null;
+  }
+
   function center(p: Cell): string {
     return `${p.c * UNIT + UNIT / 2},${p.r * UNIT + UNIT / 2}`;
   }
@@ -262,17 +352,12 @@ export function mountUI(roots: UIRoots, board: Board, game: Game): void {
     return a.r === b.r && a.c === b.c;
   }
 
-  function say(text: string): void {
-    roots.info.textContent = text;
-  }
-
-  function button(label: string, onClick: () => void): HTMLButtonElement {
-    const el = document.createElement('button');
-    el.textContent = label;
-    el.addEventListener('click', onClick);
+  function span(cls: string, text: string): HTMLSpanElement {
+    const el = document.createElement('span');
+    el.className = cls;
+    el.textContent = text;
     return el;
   }
 
   load(PRESETS[0]);
-  say(IDLE_TEXT);
 }
