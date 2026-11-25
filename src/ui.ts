@@ -52,7 +52,7 @@ export interface UIRoots {
   palette: HTMLElement;
   info: HTMLElement;
   presets: HTMLSelectElement;
-  eraser: HTMLButtonElement;
+  wire: HTMLButtonElement;
   clear: HTMLButtonElement;
 }
 
@@ -67,7 +67,8 @@ interface Drag {
 
 export function mountUI(roots: UIRoots, board: Board, game: Game): void {
   let selected: string | null = null;
-  let eraser = false;
+  let wiring = false;
+  let wireFrom: Cell | null = null;
   let picked: Cell | null = null;
   let drag: Drag | null = null;
   const cellEls: HTMLDivElement[][] = [];
@@ -101,7 +102,8 @@ export function mountUI(roots: UIRoots, board: Board, game: Game): void {
     tile.append(span('icon', part.icon), span('name', part.name));
     tile.addEventListener('click', () => {
       selected = selected === part.id ? null : part.id;
-      eraser = false;
+      wiring = false;
+      wireFrom = null;
       picked = null;
       refresh();
     });
@@ -117,8 +119,9 @@ export function mountUI(roots: UIRoots, board: Board, game: Game): void {
     if (preset) load(preset);
   });
 
-  roots.eraser.addEventListener('click', () => {
-    eraser = !eraser;
+  roots.wire.addEventListener('click', () => {
+    wiring = !wiring;
+    wireFrom = null;
     selected = null;
     picked = null;
     refresh();
@@ -135,7 +138,8 @@ export function mountUI(roots: UIRoots, board: Board, game: Game): void {
     if (!cell || drag) return;
     const part = board.get(cell.r, cell.c);
     let mode: Drag['mode'] = 'tap';
-    if (!eraser && !selected && part) mode = part.kind === 'input' ? 'wire' : 'move';
+    if (wiring) mode = part?.kind === 'input' ? 'wire' : 'tap';
+    else if (!selected && part) mode = 'move';
     drag = { pointerId: e.pointerId, start: cell, last: cell, mode, dragged: false, path: [] };
     grid.setPointerCapture(e.pointerId);
   });
@@ -187,9 +191,41 @@ export function mountUI(roots: UIRoots, board: Board, game: Game): void {
     else return;
     d.last = cell;
     d.dragged = true;
+    wireFrom = d.start;
     board.setWire(d.start, d.path);
     drawWires();
     showText(`와이어 ${d.path.length}/${MAX_WIRE}칸. 지나온 칸으로 되돌아가면 와이어가 줄어든다.`);
+  }
+
+  // 배선 중 탭: 입력 파츠를 고르고, 와이어 끝에 붙은 칸을 눌러 잇는다. 마지막 칸을 다시 누르면 한 칸 줄어든다.
+  function wireTap(cell: Cell): void {
+    const part = board.get(cell.r, cell.c);
+    if (part?.kind === 'input') {
+      if (wireFrom && same(wireFrom, cell)) board.setWire(cell, []);
+      else wireFrom = cell;
+      return refresh();
+    }
+    if (!wireFrom) return showText('먼저 와이어를 그릴 입력 파츠를 누른다.');
+    const path = board.wire(wireFrom);
+    if (path.length > 0 && same(cell, path[path.length - 1])) {
+      board.setWire(wireFrom, path.slice(0, -1));
+    } else if (!board.setWire(wireFrom, [...path, cell])) {
+      refresh();
+      return showText('여기는 이을 수 없다. 빛나는 칸만 이을 수 있다.');
+    }
+    refresh();
+  }
+
+  function wireCandidates(): Cell[] {
+    if (!wireFrom) return [];
+    const path = board.wire(wireFrom);
+    const end = path.length > 0 ? path[path.length - 1] : wireFrom;
+    return [
+      { r: end.r - 1, c: end.c },
+      { r: end.r + 1, c: end.c },
+      { r: end.r, c: end.c - 1 },
+      { r: end.r, c: end.c + 1 },
+    ].filter((p) => board.inBounds(p.r, p.c) && board.canWire(wireFrom!, [...path, p]));
   }
 
   function hoverMove(d: Drag, cell: Cell): void {
@@ -206,10 +242,9 @@ export function mountUI(roots: UIRoots, board: Board, game: Game): void {
   }
 
   function onTap(cell: Cell): void {
+    if (wiring) return wireTap(cell);
     const part = board.get(cell.r, cell.c);
-    if (eraser) {
-      board.set(cell.r, cell.c, null);
-    } else if (selected) {
+    if (selected) {
       board.set(cell.r, cell.c, selected);
     } else if (picked && same(picked, cell)) {
       picked = null;
@@ -237,18 +272,25 @@ export function mountUI(roots: UIRoots, board: Board, game: Game): void {
     }
     picked = null;
     selected = null;
-    eraser = false;
+    wiring = false;
+    wireFrom = null;
     refresh();
   }
 
   function refresh(): void {
     if (picked && !board.get(picked.r, picked.c)) picked = null;
+    if (wireFrom && board.get(wireFrom.r, wireFrom.c)?.kind !== 'input') wireFrom = null;
+    const candidates = wiring ? wireCandidates() : [];
     for (let r = 0; r < board.rows; r++) {
       for (let c = 0; c < board.cols; c++) {
         const el = cellEls[r][c];
         const part = board.get(r, c);
         const isPicked = !!picked && picked.r === r && picked.c === c;
-        el.className = `cell${part ? ` kind-${part.kind}` : ''}${isPicked ? ' picked' : ''}`;
+        const isSource = wiring && !!wireFrom && wireFrom.r === r && wireFrom.c === c;
+        const canWire = candidates.some((p) => p.r === r && p.c === c);
+        el.className =
+          `cell${part ? ` kind-${part.kind}` : ''}${isPicked ? ' picked' : ''}` +
+          `${isSource ? ' wire-src' : ''}${canWire ? ' can-wire' : ''}`;
         el.replaceChildren();
         if (part) el.append(span('icon', part.icon), span('name', part.name));
         if (isPicked) {
@@ -270,21 +312,30 @@ export function mountUI(roots: UIRoots, board: Board, game: Game): void {
       }
     }
     for (const [id, tile] of tiles) tile.classList.toggle('selected', id === selected);
-    roots.eraser.classList.toggle('active', eraser);
-    roots.board.classList.toggle('erasing', eraser);
+    roots.wire.textContent = wiring ? '배선 완료' : '배선';
+    roots.wire.classList.toggle('active', wiring);
+    roots.board.classList.toggle('wiring', wiring);
     drawWires();
     showInfo();
   }
 
   function showInfo(): void {
-    if (eraser) return showText('지우개: 판의 파츠를 눌러 지운다. 다시 누르면 지우개가 꺼진다.');
+    if (wiring) {
+      if (!wireFrom) {
+        return showText('배선 중: 와이어를 그릴 입력 파츠를 누른다. 입력 파츠에서 끌어서 그려도 된다. 끝나면 배선 완료를 누른다.');
+      }
+      const name = board.get(wireFrom.r, wireFrom.c)!.name;
+      return showText(
+        `배선 중: ${name} 와이어 ${board.wire(wireFrom).length}/${MAX_WIRE}칸. 빛나는 칸을 눌러 잇고, 마지막 칸을 다시 누르면 한 칸 줄어든다. 입력 파츠를 다시 누르면 와이어를 지운다.`,
+      );
+    }
     if (picked) {
       const part = board.get(picked.r, picked.c)!;
       const extra = part.kind === 'input' ? inputSummary(picked) : [];
       const hint =
         part.kind === 'input'
-          ? '빈 칸을 눌러 옮긴다(와이어는 새로 그린다). 끌면 와이어가 이어진다. ✕로 지운다.'
-          : '끌어서 옮기거나, 빈 칸을 눌러 옮긴다. ✕로 지운다.';
+          ? '끌거나 빈 칸을 눌러 옮긴다(와이어는 새로 그린다). ✕로 지운다. 와이어는 위의 배선 버튼으로 그린다.'
+          : '끌거나 빈 칸을 눌러 옮긴다. ✕로 지운다.';
       return showPart(part, extra, hint);
     }
     if (selected) return showPart(PART_BY_ID.get(selected)!, [], '판의 칸을 눌러 놓는다.');

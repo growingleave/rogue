@@ -16,7 +16,7 @@ mountUI(
     palette: $('palette'),
     info: $('info'),
     presets: $('presets') as HTMLSelectElement,
-    eraser: $('eraser') as HTMLButtonElement,
+    wire: $('wire') as HTMLButtonElement,
     clear: $('clear') as HTMLButtonElement,
   },
   board,
