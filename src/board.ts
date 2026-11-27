@@ -1,5 +1,4 @@
 import { PART_BY_ID, type PartDef } from './parts';
-import { MAX_WIRE } from './tuning';
 
 export interface Cell {
   r: number;
@@ -81,6 +80,7 @@ export class Board {
       this.cutWiresAt(here);
       this.wires.set(cellKey(here), []);
     }
+    this.fitWires();
   }
 
   clear(): void {
@@ -125,8 +125,18 @@ export class Board {
     return null;
   }
 
+  capacity(input: Cell): number {
+    const part = this.get(input.r, input.c);
+    return part?.kind === 'input' ? (part.wire ?? 0) : 0;
+  }
+
+  // 와이어가 쓰는 용량. 무거운 파츠는 무게만큼, 빈 칸과 그 밖의 칸은 1칸으로 센다.
+  cost(path: Cell[]): number {
+    return path.reduce((s, p) => s + (this.get(p.r, p.c)?.weight ?? 1), 0);
+  }
+
   canWire(input: Cell, path: Cell[]): boolean {
-    if (this.get(input.r, input.c)?.kind !== 'input' || path.length > MAX_WIRE) return false;
+    if (this.get(input.r, input.c)?.kind !== 'input' || this.cost(path) > this.capacity(input)) return false;
     const me = cellKey(input);
     const seen = new Set<string>([me]);
     let prev = input;
@@ -150,6 +160,22 @@ export class Board {
     for (const [k, path] of this.wires) {
       const i = path.findIndex((p) => sameCell(p, cell));
       if (i >= 0) this.wires.set(k, path.slice(0, i));
+    }
+  }
+
+  // 무거운 파츠가 와이어 위에 놓여 용량을 넘으면, 넘치는 칸부터 와이어가 끊긴다.
+  private fitWires(): void {
+    for (const [k, path] of this.wires) {
+      const [r, c] = k.split(',').map(Number);
+      const cap = this.capacity({ r, c });
+      let used = 0;
+      let keep = 0;
+      for (const p of path) {
+        used += this.get(p.r, p.c)?.weight ?? 1;
+        if (used > cap) break;
+        keep++;
+      }
+      if (keep < path.length) this.wires.set(k, path.slice(0, keep));
     }
   }
 

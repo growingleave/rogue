@@ -12,7 +12,7 @@ import {
 } from './tuning';
 
 export type PartKind = 'input' | 'effect' | 'boost';
-export type Trigger = 'timer' | 'move';
+export type Trigger = 'timer' | 'move' | 'still' | 'hits' | 'damage';
 
 export interface EffectMod {
   damageMul?: number;
@@ -37,6 +37,12 @@ export interface PartDef {
   trigger?: Trigger;
   damage?: number;
   cooldown?: number;
+  // 적중 누적·피해 누적: 쿨타임 1초당 필요한 적중 수·피해량. 기준값 = 쿨타임 × per.
+  per?: number;
+  // 입력 파츠의 와이어 용량.
+  wire?: number;
+  // 와이어에서 차지하는 칸 수. 없으면 1.
+  weight?: number;
   mod?: EffectMod;
   boostDamage?: number;
   accelMul?: number;
@@ -51,17 +57,54 @@ export const PARTS: PartDef[] = [
     trigger: 'timer',
     damage: 10,
     cooldown: 1,
+    wire: 4,
     desc: '쿨타임마다 와이어를 따라 신호를 보내 가장 가까운 적을 공격한다.',
   },
   {
     id: 'in-move',
-    name: '이동할 때',
+    name: '이동',
     kind: 'input',
     icon: '⇝',
     trigger: 'move',
     damage: 8,
     cooldown: 0.5,
+    wire: 4,
     desc: '움직인 거리가 쌓이면 와이어를 따라 신호를 보내 공격한다. 멈춰 있으면 발동하지 않는다.',
+  },
+  {
+    id: 'in-still',
+    name: '정지',
+    kind: 'input',
+    icon: '■',
+    trigger: 'still',
+    damage: 14,
+    cooldown: 0.8,
+    wire: 5,
+    desc: '멈춰 있는 동안 쿨타임마다 공격한다. 움직이는 동안은 쌓이지 않는다.',
+  },
+  {
+    id: 'in-hits',
+    name: '적중 누적',
+    kind: 'input',
+    icon: '◎',
+    trigger: 'hits',
+    damage: 12,
+    cooldown: 1,
+    per: 10,
+    wire: 5,
+    desc: '다른 와이어의 공격이 적에게 맞은 횟수가 쌓이면 공격한다. 자기 와이어의 적중은 세지 않는다.',
+  },
+  {
+    id: 'in-damage',
+    name: '피해 누적',
+    kind: 'input',
+    icon: '∑',
+    trigger: 'damage',
+    damage: 15,
+    cooldown: 1,
+    per: 100,
+    wire: 6,
+    desc: '다른 와이어가 준 피해가 쌓이면 공격한다. 화상 같은 지속 피해도 센다. 자기 와이어의 피해는 세지 않는다.',
   },
   {
     id: 'sniper',
@@ -109,6 +152,7 @@ export const PARTS: PartDef[] = [
     kind: 'effect',
     icon: '분',
     desc: '맞으면 작은 탄으로 갈라진다. 레이저는 처음 닿은 적에서 갈래로 갈라진다.',
+    weight: 2,
     mod: { splitCount: 3 },
   },
   {
@@ -141,6 +185,7 @@ export const PARTS: PartDef[] = [
     kind: 'effect',
     icon: '레',
     desc: '투사체 대신 잠깐 유지되는 레이저를 쏜다. 레이저 위의 모든 적을 맞힌다. 폭발·화상은 적마다 한 번만 터진다.',
+    weight: 2,
     mod: { laser: true, damageMul: 0.8 },
   },
   {
@@ -169,12 +214,20 @@ const pct = (v: number) => `${Math.round(v * 100)}%`;
 export function statLines(p: PartDef): string[] {
   const out: string[] = [];
   if (p.kind === 'input') {
-    out.push(`기본 피해 ${num(p.damage ?? 0)}`, `쿨타임 ${num(p.cooldown ?? 0)}초`);
+    const cd = p.cooldown ?? 0;
+    out.push(`기본 피해 ${num(p.damage ?? 0)}`, `쿨타임 ${num(cd)}초`);
     if (p.trigger === 'move') {
-      const cd = p.cooldown ?? 0;
       out.push(`쿨타임 ${num(cd)}초 × 이동속도 ${PLAYER_SPEED} = ${num(cd * PLAYER_SPEED)}px 움직일 때마다 발동`);
+    } else if (p.trigger === 'still') {
+      out.push(`멈춰 있는 동안 ${num(cd)}초마다 발동`);
+    } else if (p.trigger === 'hits') {
+      out.push(`쿨타임 ${num(cd)}초 × ${p.per} = 적중 ${num(cd * (p.per ?? 0))}번마다 발동`);
+    } else if (p.trigger === 'damage') {
+      out.push(`쿨타임 ${num(cd)}초 × ${p.per} = 피해 ${num(cd * (p.per ?? 0))}마다 발동`);
     }
+    out.push(`와이어 용량 ${p.wire ?? 0}칸`);
   }
+  if ((p.weight ?? 1) > 1) out.push(`무게 ${p.weight}: 와이어 ${p.weight}칸을 차지`);
   const m = p.mod ?? {};
   if (m.laser) {
     out.push(`레이저: ${num(LASER_TIME)}초 동안 ${LASER_TICKS}번 연타, 1번에 공격 피해의 ${pct(LASER_TICK_DAMAGE)}`);

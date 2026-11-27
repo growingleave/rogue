@@ -2,7 +2,6 @@
 
 export const PLAYER_SPEED = 220;
 export const MAX_PROJECTILES = 200;
-export const MAX_WIRE = 5;
 
 export const BURN_TIME = 2;
 export const EXPLODE_DAMAGE = 0.5;

@@ -277,11 +277,25 @@ select {
 
 .palette {
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 6px;
+  grid-template-columns: repeat(9, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.wt {
+  position: absolute;
+  left: 3px;
+  bottom: 2px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: rgba(255, 211, 92, 0.85);
+  color: #1a1300;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 14px;
 }
 
 .tile {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -300,8 +314,16 @@ select {
 }
 
 .tile .name {
+  max-width: 100%;
+  overflow: hidden;
   font-size: 11px;
   white-space: nowrap;
+}
+
+@media (max-width: 380px) {
+  .palette {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
 }
 
 .tile.selected {

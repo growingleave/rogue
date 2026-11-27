@@ -29,10 +29,13 @@ interface Dummy {
   burnDps: number;
   burnUntil: number;
   burnShown: number;
+  burnSource: string;
   flash: number;
 }
 
+// source: 이 공격을 만든 입력 파츠의 칸 키. 적중 누적·피해 누적이 자기 와이어를 빼고 세는 데 쓴다.
 interface Projectile {
+  source: string;
   x: number;
   y: number;
   vx: number;
@@ -50,6 +53,7 @@ interface Projectile {
 }
 
 interface Beam {
+  source: string;
   attack: AttackSpec;
   offset: number;
   life: number;
@@ -92,6 +96,7 @@ export class Game {
   private blasts: Blast[] = [];
   private floaters: Floater[] = [];
   private progress = new Map<string, number>();
+  private events: { source: string; hits: number; damage: number }[] = [];
   private damageLog: { t: number; amount: number }[] = [];
 
   constructor(
@@ -114,6 +119,7 @@ export class Game {
       burnDps: 0,
       burnUntil: 0,
       burnShown: 0,
+      burnSource: '',
       flash: 0,
     }));
     this.resize();
@@ -164,15 +170,32 @@ export class Game {
     this.player.y = Math.min(Math.max(this.player.y, PLAYER_RADIUS), this.h - PLAYER_RADIUS);
   }
 
+  // 모든 입력의 발동 기준은 쿨타임에서 나온다. 그래서 속사·가속 같은 쿨타임 파츠가 모든 입력에 똑같이 듣는다.
+  // 한 프레임에 한 번만 발동하고, 남는 진행도는 한 번 분량까지만 남겨 연쇄가 폭주하지 않게 한다.
   private runInputs(dt: number, moved: number): void {
     const live = new Set<string>();
+    const events = this.events;
+    this.events = [];
     for (const cell of this.board.inputs()) {
       const part = this.board.get(cell.r, cell.c)!;
-      const k = `${cellKey(cell)}:${part.id}`;
+      const me = cellKey(cell);
+      const k = `${me}:${part.id}`;
       live.add(k);
       const cd = intervalOf(this.board, cell);
-      const need = part.trigger === 'move' ? cd * PLAYER_SPEED : cd;
-      let p = (this.progress.get(k) ?? 0) + (part.trigger === 'move' ? moved : dt);
+      let need = cd;
+      let gain = dt;
+      if (part.trigger === 'move') {
+        need = cd * PLAYER_SPEED;
+        gain = moved;
+      } else if (part.trigger === 'still') {
+        gain = moved > 0 ? 0 : dt;
+      } else if (part.trigger === 'hits' || part.trigger === 'damage') {
+        need = cd * (part.per ?? 1);
+        gain = events
+          .filter((e) => e.source !== me)
+          .reduce((s, e) => s + (part.trigger === 'hits' ? e.hits : e.damage), 0);
+      }
+      let p = (this.progress.get(k) ?? 0) + gain;
       if (p >= need) {
         p = Math.min(p - need, need);
         this.fire(cell);
@@ -186,8 +209,9 @@ export class Game {
     const target = this.nearestDummy(this.player.x, this.player.y, []);
     const act = activate(this.board, cell);
     if (!target || !act) return;
-    if (act.attack.laser) this.fireLaser(act.attack);
-    else this.shoot(act.attack, target);
+    const source = cellKey(cell);
+    if (act.attack.laser) this.fireLaser(act.attack, source);
+    else this.shoot(act.attack, target, source);
     this.onActivate(act.cells);
   }
 
@@ -209,10 +233,11 @@ export class Game {
     return Array.from({ length: count }, (_, i) => (i - (count - 1) / 2) * SPREAD);
   }
 
-  private shoot(a: AttackSpec, target: Dummy): void {
+  private shoot(a: AttackSpec, target: Dummy, source: string): void {
     const base = Math.atan2(target.y - this.player.y, target.x - this.player.x);
     for (const ang of this.offsets(a.count).map((o) => base + o)) {
       this.addProjectile({
+        source,
         x: this.player.x,
         y: this.player.y,
         vx: Math.cos(ang) * a.speed,
@@ -233,9 +258,10 @@ export class Game {
 
   // 레이저는 잠깐 유지되며 여러 번 연달아 피해를 준다.
   // 유도: 적 쪽으로 구부러짐. 관통: 효과 없음. 분열: 처음 닿은 적에서 갈래로 갈라짐.
-  private fireLaser(a: AttackSpec): void {
+  private fireLaser(a: AttackSpec, source: string): void {
     for (const offset of this.offsets(a.count)) {
       this.beams.push({
+        source,
         attack: a,
         offset,
         life: LASER_TIME,
@@ -285,25 +311,32 @@ export class Game {
   // 틱마다 피해를 주지만, 폭발·화상 같은 명중 효과는 레이저 한 번에 적마다 한 번만 터진다.
   private laserHit(b: Beam, d: Dummy, mul: number): void {
     const a = b.attack;
-    this.damage(d, a.damage * LASER_TICK_DAMAGE * mul, '#e8f4ff');
+    this.countHit(b.source);
+    this.damage(d, a.damage * LASER_TICK_DAMAGE * mul, '#e8f4ff', b.source);
     if (b.effectsDone.has(d.id)) return;
     b.effectsDone.add(d.id);
-    this.burn(d, a.burnDps);
-    this.explode(d.x, d.y, a.explodeRadius, a.damage * mul * EXPLODE_DAMAGE);
+    this.burn(d, a.burnDps, b.source);
+    this.explode(d.x, d.y, a.explodeRadius, a.damage * mul * EXPLODE_DAMAGE, b.source);
   }
 
-  private burn(d: Dummy, dps: number): void {
+  private burn(d: Dummy, dps: number, source: string): void {
     if (dps <= 0) return;
     d.burnDps = Math.max(d.burnUntil > this.time ? d.burnDps : 0, dps);
     d.burnUntil = this.time + BURN_TIME;
+    d.burnSource = source;
   }
 
-  private explode(x: number, y: number, radius: number, damage: number): void {
+  private explode(x: number, y: number, radius: number, damage: number, source: string): void {
     if (radius <= 0) return;
     this.blasts.push({ x, y, radius, life: 0.25 });
     for (const o of this.dummies) {
-      if (Math.hypot(o.x - x, o.y - y) <= radius + DUMMY_RADIUS) this.damage(o, damage, '#ffb35c');
+      if (Math.hypot(o.x - x, o.y - y) <= radius + DUMMY_RADIUS) this.damage(o, damage, '#ffb35c', source);
     }
+  }
+
+  // 적중은 공격이 적에게 직접 닿은 횟수다. 폭발 범위 피해와 지속 피해는 적중이 아니다.
+  private countHit(source: string): void {
+    this.events.push({ source, hits: 1, damage: 0 });
   }
 
   private addProjectile(p: Projectile): void {
@@ -348,9 +381,10 @@ export class Game {
   }
 
   private onHit(p: Projectile, d: Dummy): void {
-    this.damage(d, p.damage, '#e8f4ff');
-    this.burn(d, p.burnDps);
-    this.explode(p.x, p.y, p.explodeRadius, p.damage * EXPLODE_DAMAGE);
+    this.countHit(p.source);
+    this.damage(d, p.damage, '#e8f4ff', p.source);
+    this.burn(d, p.burnDps, p.source);
+    this.explode(p.x, p.y, p.explodeRadius, p.damage * EXPLODE_DAMAGE, p.source);
     if (p.splitCount > 0 && !p.child) {
       const base = Math.atan2(p.vy, p.vx) + Math.PI / 2;
       const speed = Math.hypot(p.vx, p.vy) * 0.8;
@@ -373,8 +407,9 @@ export class Game {
     }
   }
 
-  private damage(d: Dummy, amount: number, color: string): void {
+  private damage(d: Dummy, amount: number, color: string, source: string): void {
     this.damageLog.push({ t: this.time, amount });
+    this.events.push({ source, hits: 0, damage: amount });
     d.flash = 0.1;
     this.floaters.push({
       x: d.x + (Math.random() - 0.5) * 40,
@@ -390,6 +425,7 @@ export class Game {
       if (d.burnUntil <= this.time) continue;
       const amount = d.burnDps * dt;
       this.damageLog.push({ t: this.time, amount });
+      this.events.push({ source: d.burnSource, hits: 0, damage: amount });
       d.burnShown += amount;
       if (d.burnShown >= 3) {
         this.floaters.push({

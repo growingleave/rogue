@@ -1,7 +1,7 @@
 import { activate, intervalOf, type Board, type Cell } from './board';
 import type { Game } from './game';
 import { PARTS, PART_BY_ID, statLines, type PartDef } from './parts';
-import { MAX_WIRE, PLAYER_SPEED } from './tuning';
+import { PLAYER_SPEED } from './tuning';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const UNIT = 100;
@@ -45,7 +45,47 @@ const PRESETS: Preset[] = [
     ],
     wires: [[[2, 0], [[2, 1], [2, 2], [3, 2]]]],
   },
+  {
+    name: '정지 레이저',
+    parts: [
+      [1, 0, 'in-still'],
+      [1, 1, 'laser'],
+      [1, 2, 'split'],
+      [2, 2, 'explode'],
+    ],
+    wires: [[[1, 0], [[1, 1], [1, 2], [2, 2]]]],
+  },
+  {
+    name: '누적 연계',
+    parts: [
+      [0, 0, 'in-timer'],
+      [0, 1, 'shotgun'],
+      [0, 2, 'rapid'],
+      [0, 3, 'homing'],
+      [2, 0, 'in-hits'],
+      [2, 1, 'giant'],
+      [2, 2, 'explode'],
+      [3, 0, 'in-damage'],
+      [3, 1, 'sniper'],
+      [3, 2, 'burn'],
+    ],
+    wires: [
+      [[0, 0], [[0, 1], [0, 2], [0, 3]]],
+      [[2, 0], [[2, 1], [2, 2]]],
+      [[3, 0], [[3, 1], [3, 2]]],
+    ],
+  },
 ];
+
+function weightBadge(part: PartDef): HTMLSpanElement | null {
+  const w = part.weight ?? 1;
+  if (w <= 1) return null;
+  const el = document.createElement('span');
+  el.className = 'wt';
+  el.textContent = `${w}칸`;
+  el.title = `무게 ${w}: 와이어 ${w}칸을 차지`;
+  return el;
+}
 
 export interface UIRoots {
   board: HTMLElement;
@@ -100,6 +140,8 @@ export function mountUI(roots: UIRoots, board: Board, game: Game): void {
     tile.className = `tile kind-${part.kind}`;
     tile.title = part.name;
     tile.append(span('icon', part.icon), span('name', part.name));
+    const tileWeight = weightBadge(part);
+    if (tileWeight) tile.append(tileWeight);
     tile.addEventListener('click', () => {
       selected = selected === part.id ? null : part.id;
       wiring = false;
@@ -194,7 +236,7 @@ export function mountUI(roots: UIRoots, board: Board, game: Game): void {
     wireFrom = d.start;
     board.setWire(d.start, d.path);
     drawWires();
-    showText(`와이어 ${d.path.length}/${MAX_WIRE}칸. 지나온 칸으로 되돌아가면 와이어가 줄어든다.`);
+    showText(`와이어 ${wireUse(d.start)}. 지나온 칸으로 되돌아가면 와이어가 줄어든다.`);
   }
 
   // 배선 중 탭: 입력 파츠를 고르고, 와이어 끝에 붙은 칸을 눌러 잇는다. 마지막 칸을 다시 누르면 한 칸 줄어든다.
@@ -292,7 +334,11 @@ export function mountUI(roots: UIRoots, board: Board, game: Game): void {
           `cell${part ? ` kind-${part.kind}` : ''}${isPicked ? ' picked' : ''}` +
           `${isSource ? ' wire-src' : ''}${canWire ? ' can-wire' : ''}`;
         el.replaceChildren();
-        if (part) el.append(span('icon', part.icon), span('name', part.name));
+        if (part) {
+          el.append(span('icon', part.icon), span('name', part.name));
+          const badge = weightBadge(part);
+          if (badge) el.append(badge);
+        }
         if (isPicked) {
           const del = document.createElement('button');
           del.className = 'del';
@@ -326,7 +372,7 @@ export function mountUI(roots: UIRoots, board: Board, game: Game): void {
       }
       const name = board.get(wireFrom.r, wireFrom.c)!.name;
       return showText(
-        `배선 중: ${name} 와이어 ${board.wire(wireFrom).length}/${MAX_WIRE}칸. 빛나는 칸을 눌러 잇고, 마지막 칸을 다시 누르면 한 칸 줄어든다. 입력 파츠를 다시 누르면 와이어를 지운다.`,
+        `배선 중: ${name} 와이어 ${wireUse(wireFrom)}. 빛나는 칸을 눌러 잇고, 마지막 칸을 다시 누르면 한 칸 줄어든다. 입력 파츠를 다시 누르면 와이어를 지운다. 무거운 파츠는 2칸을 쓴다.`,
       );
     }
     if (picked) {
@@ -346,13 +392,26 @@ export function mountUI(roots: UIRoots, board: Board, game: Game): void {
     const part = board.get(cell.r, cell.c)!;
     const a = activate(board, cell)!.attack;
     const cd = intervalOf(board, cell);
+    const per = part.per ?? 1;
     const every =
-      part.trigger === 'move' ? `${Math.round(cd * PLAYER_SPEED)}px 움직일 때마다` : `${cd.toFixed(2)}초마다`;
+      part.trigger === 'move'
+        ? `${Math.round(cd * PLAYER_SPEED)}px 움직일 때마다`
+        : part.trigger === 'still'
+          ? `멈춰 있으면 ${cd.toFixed(2)}초마다`
+          : part.trigger === 'hits'
+            ? `적중 ${Number((cd * per).toFixed(1))}번마다`
+            : part.trigger === 'damage'
+              ? `피해 ${Number((cd * per).toFixed(1))}마다`
+              : `${cd.toFixed(2)}초마다`;
     const form = a.laser ? '레이저' : '투사체';
     return [
       `지금 이 입력의 공격: ${form} ${a.count}발, 피해 ${a.damage.toFixed(1)}, ${every}`,
-      `와이어 ${board.wire(cell).length}/${MAX_WIRE}칸`,
+      `와이어 ${wireUse(cell)}`,
     ];
+  }
+
+  function wireUse(input: Cell): string {
+    return `${board.cost(board.wire(input))}/${board.capacity(input)}칸`;
   }
 
   function showPart(part: PartDef, extra: string[], hint: string): void {
